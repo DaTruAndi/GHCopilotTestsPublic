@@ -1,1 +1,133 @@
 # GHCopilotTestsPublic
+
+## Environment Resource Tests — Findings
+
+Tests are in [`tests/`](tests/).  Run with:
+
+```bash
+pip install pytest psutil
+pytest tests/ -v -s
+```
+
+---
+
+## 1. CPU / Threading
+
+**File:** [`tests/test_cpu.py`](tests/test_cpu.py)
+
+### Topology
+
+| Property | Value |
+|---|---|
+| Logical CPUs | **4** |
+| Physical sockets | 1 |
+| Physical cores | **2** |
+| Threads per core (SMT) | **2** |
+| CPU model | AMD EPYC 7763 64-Core Processor |
+| Hypervisor | Microsoft Hyper-V (full virtualisation) |
+
+**Verdict:** The hypothesis is **confirmed** – the environment has exactly 2 physical cores, each with 2 SMT threads, giving 4 logical CPUs.
+
+### Python threading (GIL-limited)
+
+CPU-bound work across 1, 2, 4 threads shows essentially **no speedup** (~0.98×), confirming the Python GIL serialises CPU-bound threads.
+
+| Threads | Speedup |
+|---|---|
+| 1 | 1.00× (baseline) |
+| 2 | 0.98× |
+| 4 | 0.98× |
+
+### Multiprocessing (GIL bypassed)
+
+| Processes | Speedup |
+|---|---|
+| 1 | 1.00× (baseline) |
+| 2 | **1.91×** ← confirms dual-core |
+| 3 | 1.97× |
+| 4 | **2.28×** ← SMT gives modest extra gain |
+
+- 1 → 2 processes: **~1.91×** speedup → real dual-core confirmed.
+- 1 → 4 processes: **~2.28×** → SMT threads add only ~19% on top of the 2-core gain (they share execution units).
+- **No evidence of throttling or a single-core limit.**
+
+---
+
+## 2. RAM
+
+**File:** [`tests/test_ram.py`](tests/test_ram.py)
+
+### Baseline
+
+| Property | Value |
+|---|---|
+| Total RAM | **~16 GB** (15.62 GB usable) |
+| Available at start | ~14 GB |
+| Swap | 3 GB |
+
+### Gradual fill (512 MB steps)
+
+| Milestone | Observation |
+|---|---|
+| 0 → 7 GB | No swap, smooth allocation |
+| **8 GB** | **No OOM, no error** – 8 GB limit hypothesis **DISPROVED** |
+| 13.5 GB | Swap starts (only ~28 MB) |
+| 14 GB | 411 MB swap used, process still alive |
+
+The **8 GB limit hypothesis is false**. The process can freely allocate past 8 GB.
+
+### Swap exhaustion test
+
+Pushed to 14 GB allocated (all available RAM + start of swap):
+
+| Event | Allocated | Swap used |
+|---|---|---|
+| Swap starts | ~13.75 GB | 100 MB new |
+| Safety stop | ~14 GB | ~459 MB total |
+
+The OS (Linux kernel) handled swapping gracefully. No OOM kill was triggered. After freeing, memory returned to baseline.
+
+---
+
+## 3. Disk
+
+**File:** [`tests/test_disk.py`](tests/test_disk.py)
+
+### Baseline
+
+| Mount | Total | Free |
+|---|---|---|
+| `/` (root) | **144.3 GB** | ~90.5 GB |
+| `/tmp` | 144.3 GB (same FS) | ~90.5 GB |
+| `/dev/shm` | 7.8 GB (tmpfs) | 7.8 GB |
+
+### Single large file (target 20 GB)
+
+| Milestone | Observation |
+|---|---|
+| 1 → 13 GB | Writes succeed, disk free decreases normally |
+| **14 GB** | **No write error** – 14 GB limit hypothesis **DISPROVED** |
+| 20 GB | Final file size: **20.00 GB** – no errors |
+
+The **14 GB single-file disk limit hypothesis is false**. A 20 GB file was written without issue.
+
+### Many 100 MB files (target 20 GB)
+
+| Milestone | Observation |
+|---|---|
+| 13 GB (130 files) | No errors, disk free = ~77 GB |
+| **14 GB (144 files)** | **No error** – 14 GB multi-file hypothesis **DISPROVED** |
+| 20 GB (205 files) | All 205 × 100 MB files written successfully |
+
+---
+
+## Summary
+
+| Hypothesis | Result |
+|---|---|
+| 2 cores + 2 threads/core = 4 logical CPUs | ✅ **Confirmed** |
+| GIL prevents thread speedup for CPU-bound code | ✅ **Confirmed** |
+| Multiprocessing shows real ~2× speedup (dual-core) | ✅ **Confirmed** |
+| 8 GB RAM hard limit enforced | ❌ **Disproved** – 14 GB allocated without issue |
+| 14 GB disk limit (single file) | ❌ **Disproved** – 20 GB file written successfully |
+| 14 GB disk limit (many files) | ❌ **Disproved** – 205 × 100 MB = 20 GB written successfully |
