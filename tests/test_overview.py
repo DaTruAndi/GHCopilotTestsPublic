@@ -18,6 +18,12 @@ import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
 
+# Avoid a circular import – import only the reusable measurement function
+try:
+    from tests.test_disk import measure_disk_user_space_exhaustion
+except ImportError:
+    from test_disk import measure_disk_user_space_exhaustion
+
 # ---------------------------------------------------------------------------
 # Constants documenting results from the stress-test suite
 # (tests/test_ram.py and tests/test_disk.py) – update these if re-measured.
@@ -145,16 +151,28 @@ def _measure_ram():
 
 
 def _measure_disk():
-    """Return a dict of disk facts measured at runtime."""
+    """Return a dict of disk facts measured at runtime (includes exhaustion probe)."""
     facts = {}
     st = os.statvfs("/")
-    total = st.f_blocks * st.f_frsize / 1024**3
-    free  = st.f_bavail  * st.f_frsize / 1024**3
-    used  = total - free
-    facts["root_total_gb"] = f"{total:.1f} GB"
-    facts["root_used_gb"]  = f"{used:.1f} GB"
-    facts["root_free_gb"]  = f"{free:.1f} GB"
-    facts["root_pct_used"] = f"{used/total*100:.0f}%"
+    total      = st.f_blocks * st.f_frsize / 1024**3
+    free_user  = st.f_bavail * st.f_frsize / 1024**3   # user-available (f_bavail)
+    free_root  = st.f_bfree  * st.f_frsize / 1024**3   # root-reserved included
+    used       = (st.f_blocks - st.f_bfree) * st.f_frsize / 1024**3
+    reserved   = free_root - free_user
+
+    facts["root_total_gb"]    = f"{total:.1f} GB"
+    facts["root_used_gb"]     = f"{used:.1f} GB"
+    facts["root_free_user_gb"] = f"{free_user:.2f} GB (f_bavail)"
+    facts["root_reserved_gb"] = f"{reserved:.2f} GB"
+    facts["root_pct_used"]    = f"{used/total*100:.0f}%"
+
+    # Live exhaustion measurement (near-instant via posix_fallocate)
+    exhaust = measure_disk_user_space_exhaustion("/")
+    facts["exhaust_capacity_gb"]  = f"~{exhaust['capacity_gb']:.2f} GB"
+    facts["exhaust_allocated_gb"] = f"{exhaust['allocated_gb']:.2f} GB"
+    facts["exhaust_safety_mb"]    = f"{exhaust['safety_margin_mb']} MB"
+    facts["exhaust_hit_enospc"]   = "yes" if exhaust["hit_enospc"] else "no (safety stop)"
+
     facts["max_single_file_written"] = _STRESS_MAX_SINGLE_FILE
     facts["max_multi_file_written"]  = _STRESS_MAX_MULTI_FILE
     return facts
@@ -263,13 +281,18 @@ def _build_overview() -> str:
             ("8 GB limit?",     "No — 14 GB+ allocated without error"),
         ]),
         ("Disk (/)", [
-            ("Total",                   disk["root_total_gb"]),
-            ("Used",                    disk["root_used_gb"]),
-            ("Free",                    disk["root_free_gb"]),
-            ("Used %",                  disk["root_pct_used"]),
-            ("Max single file written", disk["max_single_file_written"]),
-            ("Max multi-file written",  disk["max_multi_file_written"]),
-            ("14 GB limit?",            "No — 20 GB written without error"),
+            ("Total",                      disk["root_total_gb"]),
+            ("Used",                       disk["root_used_gb"]),
+            ("User-available (f_bavail)",  disk["root_free_user_gb"]),
+            ("Reserved for root",          disk["root_reserved_gb"]),
+            ("Used %",                     disk["root_pct_used"]),
+            ("User-writable capacity",     disk["exhaust_capacity_gb"]),
+            ("Allocated at exhaust stop",  disk["exhaust_allocated_gb"]),
+            ("Exhaustion safety margin",   disk["exhaust_safety_mb"]),
+            ("ENOSPC raised",              disk["exhaust_hit_enospc"]),
+            ("Max single file written",    disk["max_single_file_written"]),
+            ("Max multi-file written",     disk["max_multi_file_written"]),
+            ("14 GB limit?",               "No — 20 GB written without error"),
         ]),
     ]
 

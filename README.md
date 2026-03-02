@@ -25,8 +25,10 @@
 | | Swap starts at | ~13.75 GB allocated |
 | | Hard 8 GB limit? | **No** — 14 GB+ allocated without error |
 | **Disk (/)** | Total | **144.3 GB** |
-| | Used (OS + runner) | ~53.8 GB |
-| | Free | ~90.5 GB |
+| | Used (OS + runner) | ~52.9 GB |
+| | User-available (f_bavail) | **~91.4 GB** |
+| | Reserved for root | ~0.02 GB |
+| | User-writable capacity | **~91.4 GB** (exhaustion-tested ✅) |
 | | Max single file written | 20 GB ✅ |
 | | Max multi-file written | 20 GB (205 × 100 MB) ✅ |
 | | Hard 14 GB limit? | **No** — 20 GB written without error |
@@ -150,6 +152,24 @@ The **14 GB single-file disk limit hypothesis is false**. A 20 GB file was writt
 | **14 GB (144 files)** | **No error** – 14 GB multi-file hypothesis **DISPROVED** |
 | 20 GB (205 files) | All 205 × 100 MB files written successfully |
 
+### User-space exhaustion (`test_disk_user_space_exhaustion`)
+
+Uses `posix_fallocate` (zero-copy, near-instant) to fill the filesystem to within 512 MB of the OS-reported user limit, then cleans up.
+
+| Property | Value |
+|---|---|
+| Filesystem | `/` (ext4 on Azure Hyper-V) |
+| Total size | **144.3 GB** |
+| In use (OS + runner) | ~52.9 GB |
+| User-available (f_bavail) | **~91.4 GB** |
+| Reserved for root (f_bfree − f_bavail) | ~0.02 GB |
+| Allocated before safety stop | **~90.9 GB** |
+| Free at stop | 512 MB (safety margin) |
+| ENOSPC raised | **No** – safety stop triggered first |
+| Space after cleanup | ~91.4 GB (fully restored) |
+
+**Verdict:** The entire `f_bavail` (~91.4 GB) is user-writable. No artificial ceiling below the OS-reported limit. Space is fully returned after files are deleted.
+
 ---
 
 ## Summary
@@ -162,3 +182,4 @@ The **14 GB single-file disk limit hypothesis is false**. A 20 GB file was writt
 | 8 GB RAM hard limit enforced | ❌ **Disproved** – 14 GB allocated without issue |
 | 14 GB disk limit (single file) | ❌ **Disproved** – 20 GB file written successfully |
 | 14 GB disk limit (many files) | ❌ **Disproved** – 205 × 100 MB = 20 GB written successfully |
+| User-writable disk limited below f_bavail | ❌ **Disproved** – full ~91.4 GB f_bavail is writable (exhaustion-tested) |
