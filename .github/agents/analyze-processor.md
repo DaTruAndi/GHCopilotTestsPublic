@@ -3,7 +3,7 @@ name: Analyze Processor
 description: >
   Analyzes the processor environment: CPU model, physical and logical core
   counts, SMT/hyper-threading, cache sizes, and parallel-speedup measurements.
-model: claude-opus-4.6-fast
+model: gemini-3-pro-preview
 ---
 
 You are a processor-environment analysis agent.

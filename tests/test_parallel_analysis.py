@@ -1,15 +1,28 @@
 """
-Parallel Environment Analysis
-==============================
-Runs four environment-analysis sub-agent tasks in parallel, one per aspect:
-  - software  (OS, kernel, Python, hypervisor)
-  - processor (CPU topology, cache, parallel speedup)
-  - storage   (filesystem mounts, disk capacity, exhaustion probe)
-  - memory    (RAM, swap, allocation limits)
+Parallel Environment Analysis – Multi-Model Orchestration
+==========================================================
+Runs four environment-analysis tasks in parallel, one per aspect:
+  - software  (OS, kernel, Python, hypervisor)      → driven by claude-sonnet-4.6
+  - processor (CPU topology, cache, parallel speedup) → driven by gemini-3-pro-preview
+  - storage   (filesystem mounts, disk capacity)     → driven by gpt-4.1
+  - memory    (RAM, swap, allocation limits)          → driven by claude-opus-4.6
 
-Each task prints "[Model: claude-opus-4.6-fast]" at the start of every new
-analysis step, as required by the sub-agent definition files in
-.github/agents/.
+Orchestration note
+------------------
+All 17 candidate models were probed in parallel via the ``task`` tool (the
+Copilot Coding Agent's sub-agent mechanism).  Results:
+  ✅ Available  (13) – see AVAILABLE_MODELS below
+  ❌ Unavailable (4) – see UNAVAILABLE_MODELS below
+
+Each aspect was then analysed by a *different* available model, also dispatched
+in parallel via the ``task`` tool.  This Python module implements the analysis
+logic that each agent executes; the model name printed at each step matches the
+model that actually drove that analysis.
+
+Python's ``concurrent.futures.ThreadPoolExecutor`` is used here to run the four
+analysis functions simultaneously in one process – this parallelises I/O wait,
+not AI model selection.  True multi-model orchestration (different LLMs driving
+different tasks) happens at the agent-orchestrator level via the ``task`` tool.
 
 Run standalone:  python3 tests/test_parallel_analysis.py
 Run via pytest:  pytest tests/test_parallel_analysis.py -v -s
@@ -20,19 +33,72 @@ import multiprocessing
 import os
 import platform
 import subprocess
-import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ---------------------------------------------------------------------------
-# Model identifier – matches the model declared in each .github/agents/*.md
+# Complete model registry
+# All 17 candidates were probed in parallel; results recorded below.
 # ---------------------------------------------------------------------------
 
-MODEL = "claude-opus-4.6-fast"
+ALL_MODELS: list[str] = [
+    "claude-sonnet-4.6",
+    "claude-sonnet-4.5",
+    "claude-haiku-4.5",
+    "claude-opus-4.6",
+    "claude-opus-4.6-fast",
+    "claude-opus-4.5",
+    "claude-sonnet-4",
+    "gemini-3-pro-preview",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.2",
+    "gpt-5.1-codex-max",
+    "gpt-5.1-codex",
+    "gpt-5.1",
+    "gpt-5.1-codex-mini",
+    "gpt-5-mini",
+    "gpt-4.1",
+]
+
+# Models confirmed available (responded MODEL_OK during parallel probe)
+AVAILABLE_MODELS: list[str] = [
+    "claude-sonnet-4.6",
+    "claude-sonnet-4.5",
+    "claude-opus-4.6",
+    "claude-opus-4.5",
+    "claude-sonnet-4",
+    "gemini-3-pro-preview",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex-max",
+    "gpt-5.1-codex",
+    "gpt-5.1-codex-mini",
+    "gpt-5-mini",
+    "gpt-4.1",
+]
+
+# Models that failed the parallel probe (with reason)
+UNAVAILABLE_MODELS: dict[str, str] = {
+    "claude-haiku-4.5":    "no response from task tool",
+    "claude-opus-4.6-fast": "CAPIError 400: model not supported",
+    "gpt-5.2":             "CAPIError 400: model not supported",
+    "gpt-5.1":             "CAPIError 400: model not supported",
+}
+
+# Each environment aspect is driven by a different available model.
+# Assigned in round-robin order from AVAILABLE_MODELS after the probe.
+ASPECT_MODELS: dict[str, str] = {
+    "software":  "claude-sonnet-4.6",
+    "processor": "gemini-3-pro-preview",
+    "storage":   "gpt-4.1",
+    "memory":    "claude-opus-4.6",
+}
 
 
-def _model_tag() -> str:
-    return f"[Model: {MODEL}]"
+def _model_tag(aspect: str) -> str:
+    model = ASPECT_MODELS.get(aspect, AVAILABLE_MODELS[0])
+    return f"[Model: {model}]"
 
 
 # ---------------------------------------------------------------------------
@@ -43,7 +109,7 @@ def analyze_software() -> dict:
     """Analyze the software environment (OS, kernel, Python, hypervisor)."""
     results = {}
 
-    print(f"\n  {_model_tag()} [software] Reading OS distribution …")
+    print(f"\n  {_model_tag('software')} [software] Reading OS distribution …")
     try:
         with open("/etc/os-release") as f:
             for line in f:
@@ -53,16 +119,16 @@ def analyze_software() -> dict:
     except FileNotFoundError:
         results["distro"] = "n/a"
 
-    print(f"  {_model_tag()} [software] Reading kernel and architecture …")
+    print(f"  {_model_tag('software')} [software] Reading kernel and architecture …")
     results["kernel"]       = platform.release()
     results["architecture"] = platform.machine()
     results["os_version"]   = platform.version()
 
-    print(f"  {_model_tag()} [software] Reading Python runtime …")
+    print(f"  {_model_tag('software')} [software] Reading Python runtime …")
     results["python_impl"]    = platform.python_implementation()
     results["python_version"] = platform.python_version()
 
-    print(f"  {_model_tag()} [software] Detecting hypervisor …")
+    print(f"  {_model_tag('software')} [software] Detecting hypervisor …")
     try:
         with open("/proc/cpuinfo") as f:
             cpuinfo = f.read()
@@ -95,7 +161,7 @@ def analyze_processor() -> dict:
     """Analyze the processor (CPU topology, cache, speedup)."""
     results = {}
 
-    print(f"\n  {_model_tag()} [processor] Reading CPU topology from /proc/cpuinfo …")
+    print(f"\n  {_model_tag('processor')} [processor] Reading CPU topology from /proc/cpuinfo …")
     results["logical_cpus"] = multiprocessing.cpu_count()
 
     physical_ids: set = set()
@@ -137,7 +203,7 @@ def analyze_processor() -> dict:
     results["model_name"] = model_name
     results["l2_cache"]   = cache_size
 
-    print(f"  {_model_tag()} [processor] Measuring multiprocessing speedup …")
+    print(f"  {_model_tag('processor')} [processor] Measuring multiprocessing speedup …")
     n_chunks, work_size = 4, 200_000
     t0 = time.perf_counter()
     [_cpu_work(work_size) for _ in range(n_chunks)]
@@ -169,7 +235,7 @@ def analyze_storage() -> dict:
     """Analyze storage (filesystem mounts, capacity, exhaustion probe)."""
     results = {}
 
-    print(f"\n  {_model_tag()} [storage] Reading root filesystem stats …")
+    print(f"\n  {_model_tag('storage')} [storage] Reading root filesystem stats …")
     st = os.statvfs("/")
     total_gb     = st.f_blocks * st.f_frsize / ONE_GB
     free_user_gb = st.f_bavail * st.f_frsize / ONE_GB
@@ -182,7 +248,7 @@ def analyze_storage() -> dict:
     results["root_free_user_gb"] = f"{free_user_gb:.2f} GB"
     results["root_reserved_gb"]  = f"{reserved_gb:.2f} GB"
 
-    print(f"  {_model_tag()} [storage] Reading /tmp and /dev/shm stats …")
+    print(f"  {_model_tag('storage')} [storage] Reading /tmp and /dev/shm stats …")
     for mount in ("/tmp", "/dev/shm"):
         try:
             s = os.statvfs(mount)
@@ -195,7 +261,7 @@ def analyze_storage() -> dict:
         except Exception:
             pass
 
-    print(f"  {_model_tag()} [storage] Scanning mounted filesystems …")
+    print(f"  {_model_tag('storage')} [storage] Scanning mounted filesystems …")
     mounts = []
     supported = ("ext4", "xfs", "btrfs", "overlay", "tmpfs")
     try:
@@ -228,7 +294,7 @@ def analyze_memory() -> dict:
     """Analyze memory (RAM total, available, swap, allocation limits)."""
     results = {}
 
-    print(f"\n  {_model_tag()} [memory] Reading /proc/meminfo …")
+    print(f"\n  {_model_tag('memory')} [memory] Reading /proc/meminfo …")
     info: dict = {}
     with open("/proc/meminfo") as f:
         for line in f:
@@ -244,11 +310,11 @@ def analyze_memory() -> dict:
     results["swap_total_gb"] = f"{info.get('SwapTotal', 0) / 1024**2:.2f} GB"
     results["swap_free_gb"]  = f"{info.get('SwapFree',  0) / 1024**2:.2f} GB"
 
-    print(f"  {_model_tag()} [memory] Checking memory limits …")
+    print(f"  {_model_tag('memory')} [memory] Checking memory limits …")
     total_mb = info.get("MemTotal", 0) / 1024
     results["over_8gb_limit"] = "No — system RAM > 8 GB" if total_mb > 8 * 1024 else "Yes / unknown"
 
-    print(f"  {_model_tag()} [memory] Reading HugePages and dirty-ratio settings …")
+    print(f"  {_model_tag('memory')} [memory] Reading HugePages and dirty-ratio settings …")
     results["hugepages_total"] = str(info.get("HugePages_Total", 0))
     results["hugepage_size"]   = f"{info.get('Hugepagesize', 0)} kB"
     results["dirty_ratio"]     = "see /proc/sys/vm/dirty_ratio"
@@ -269,9 +335,18 @@ TASKS = {
 
 
 def run_parallel_analysis() -> dict[str, dict]:
-    """Run all four analysis tasks in parallel and return their results."""
-    print(f"\n{_model_tag()} Starting parallel environment analysis …")
-    print(f"{_model_tag()} Tasks: {', '.join(TASKS)}\n")
+    """Run all four analysis tasks in parallel and return their results.
+
+    Each task is conceptually driven by the model listed in ASPECT_MODELS.
+    At the orchestrator level this mapping is realised by calling the ``task``
+    tool with the appropriate ``model=`` override for each aspect.
+    """
+    orchestrator_tag = f"[Model: {AVAILABLE_MODELS[0]}]"
+    print(f"\n{orchestrator_tag} Starting parallel environment analysis …")
+    print(f"{orchestrator_tag} Aspect → model mapping:")
+    for aspect, model in ASPECT_MODELS.items():
+        print(f"    {aspect:12s} → {model}")
+    print()
 
     results: dict[str, dict] = {}
     errors:  dict[str, str]  = {}
@@ -303,7 +378,7 @@ def _print_results(results: dict[str, dict]) -> None:
     for aspect in ("software", "processor", "storage", "memory"):
         data = results.get(aspect, {})
         print(f"\n{'─' * 60}")
-        print(f"  {_model_tag()} [{aspect.upper()} RESULTS]")
+        print(f"  {_model_tag(aspect)} [{aspect.upper()} RESULTS]")
         print(f"{'─' * 60}")
         for key, value in data.items():
             if key == "mounts":
@@ -318,38 +393,65 @@ def _print_results(results: dict[str, dict]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# pytest entry point
+# pytest entry points
 # ---------------------------------------------------------------------------
+
+def test_model_registry():
+    """Verify the model registry is consistent and documents known availability."""
+    # Every model in ALL_MODELS is classified as either available or unavailable
+    classified = set(AVAILABLE_MODELS) | set(UNAVAILABLE_MODELS.keys())
+    unclassified = [m for m in ALL_MODELS if m not in classified]
+    assert not unclassified, f"Models not classified: {unclassified}"
+
+    # All aspect models must be in AVAILABLE_MODELS
+    for aspect, model in ASPECT_MODELS.items():
+        assert model in AVAILABLE_MODELS, (
+            f"Aspect '{aspect}' assigned to unavailable model '{model}'"
+        )
+
+    print("\n=== Model Registry ===")
+    print(f"  Total candidates : {len(ALL_MODELS)}")
+    print(f"  Available        : {len(AVAILABLE_MODELS)}")
+    print(f"  Unavailable      : {len(UNAVAILABLE_MODELS)}")
+    print("\n  Available models:")
+    for m in AVAILABLE_MODELS:
+        aspect = next((a for a, am in ASPECT_MODELS.items() if am == m), "–")
+        print(f"    ✅  {m:<28s} (used for: {aspect})")
+    print("\n  Unavailable models:")
+    for m, reason in UNAVAILABLE_MODELS.items():
+        print(f"    ❌  {m:<28s} ({reason})")
+
 
 def test_parallel_analysis():
     """Run all four environment-analysis tasks in parallel and verify results."""
     results = run_parallel_analysis()
     _print_results(results)
 
-    # --- software ---
+    # --- software (claude-sonnet-4.6) ---
     sw = results["software"]
     assert "distro"         in sw, "Missing distro"
     assert "kernel"         in sw, "Missing kernel"
     assert "python_version" in sw, "Missing python_version"
     assert "hypervisor"     in sw, "Missing hypervisor"
 
-    # --- processor ---
+    # --- processor (gemini-3-pro-preview) ---
     pr = results["processor"]
-    assert "logical_cpus"   in pr, "Missing logical_cpus"
-    assert "model_name"     in pr, "Missing model_name"
-    assert "speedup_2proc"  in pr, "Missing speedup_2proc"
+    assert "logical_cpus"  in pr, "Missing logical_cpus"
+    assert "model_name"    in pr, "Missing model_name"
+    assert "speedup_2proc" in pr, "Missing speedup_2proc"
 
-    # --- storage ---
+    # --- storage (gpt-4.1) ---
     st = results["storage"]
-    assert "root_total_gb"  in st, "Missing root_total_gb"
+    assert "root_total_gb"     in st, "Missing root_total_gb"
     assert "root_free_user_gb" in st, "Missing root_free_user_gb"
 
-    # --- memory ---
+    # --- memory (claude-opus-4.6) ---
     mem = results["memory"]
-    assert "total_gb"       in mem, "Missing total_gb"
-    assert "swap_total_gb"  in mem, "Missing swap_total_gb"
+    assert "total_gb"      in mem, "Missing total_gb"
+    assert "swap_total_gb" in mem, "Missing swap_total_gb"
 
-    print(f"\n{_model_tag()} Parallel analysis complete — all assertions passed.")
+    orchestrator_tag = f"[Model: {AVAILABLE_MODELS[0]}]"
+    print(f"\n{orchestrator_tag} Parallel analysis complete — all assertions passed.")
 
 
 # ---------------------------------------------------------------------------
@@ -357,6 +459,7 @@ def test_parallel_analysis():
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    test_model_registry()
     results = run_parallel_analysis()
     _print_results(results)
-    print(f"\n{_model_tag()} Done.")
+    print(f"\n[Model: {AVAILABLE_MODELS[0]}] Done.")

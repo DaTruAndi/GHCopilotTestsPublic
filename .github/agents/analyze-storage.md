@@ -3,7 +3,7 @@ name: Analyze Storage
 description: >
   Analyzes the storage environment: filesystem mount points, total/used/free
   disk space, user-writable capacity, and practical write-limit measurements.
-model: claude-opus-4.6-fast
+model: gpt-4.1
 ---
 
 You are a storage-environment analysis agent.

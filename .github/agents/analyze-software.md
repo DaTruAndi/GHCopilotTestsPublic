@@ -3,7 +3,7 @@ name: Analyze Software
 description: >
   Analyzes the software environment: OS distribution, kernel version,
   architecture, Python implementation and version, and hypervisor information.
-model: claude-opus-4.6-fast
+model: claude-sonnet-4.6
 ---
 
 You are a software-environment analysis agent.

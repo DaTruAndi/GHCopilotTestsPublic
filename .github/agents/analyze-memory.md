@@ -3,7 +3,7 @@ name: Analyze Memory
 description: >
   Analyzes the memory environment: total RAM, available memory at idle,
   swap configuration, and practical allocation limits.
-model: claude-opus-4.6-fast
+model: claude-opus-4.6
 ---
 
 You are a memory-environment analysis agent.
